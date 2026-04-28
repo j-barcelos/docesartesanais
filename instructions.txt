@@ -1,0 +1,1743 @@
+Here's the complete MVC + ORM project with a single bash script that generates the entire structure:
+
+```bash
+#!/bin/bash
+################################################################################
+# Cozinha da Vizinha Doces — MVC + ORM Project Generator
+# Run: chmod +x setup.sh && ./setup.sh
+################################################################################
+
+set -e
+PROJECT="cozinha-da-vizinha"
+BASE="$(pwd)/$PROJECT"
+
+echo "🧁  Creating $PROJECT..."
+
+# ── Directory Structure ──────────────────────────────────────────────────────
+mkdir -p "$BASE"/{public/assets/{css,js,images},app/{config,core,models,controllers,views/{layouts,home,contact}},database}
+
+# ── public/.htaccess ────────────────────────────────────────────────────────
+cat > "$BASE/public/.htaccess" << 'EOF'
+RewriteEngine On
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ index.php?url=$1 [QSA,L]
+EOF
+
+# ── public/index.php ────────────────────────────────────────────────────────
+cat > "$BASE/public/index.php" << 'PHPEOF'
+<?php
+session_start();
+require_once __DIR__ . '/../app/config/app.php';
+require_once __DIR__ . '/../app/config/database.php';
+require_once __DIR__ . '/../app/core/Model.php';
+require_once __DIR__ . '/../app/core/View.php';
+require_once __DIR__ . '/../app/core/Controller.php';
+require_once __DIR__ . '/../app/core/Router.php';
+
+spl_autoload_register(function ($class) {
+    $paths = [
+        __DIR__ . '/../app/models/',
+        __DIR__ . '/../app/controllers/',
+    ];
+    foreach ($paths as $path) {
+        $file = $path . $class . '.php';
+        if (file_exists($file)) {
+            require_once $file;
+            return;
+        }
+    }
+});
+
+$router = new Router();
+$router->get('/',            'HomeController@index');
+$router->get('/home',        'HomeController@index');
+$router->post('/contato',    'ContactController@store');
+$router->get('/contato',     'HomeController@index');
+$router->get('/api/products','HomeController@apiProducts');
+$router->dispatch();
+PHPEOF
+
+# ── app/config/app.php ──────────────────────────────────────────────────────
+cat > "$BASE/app/config/app.php" << 'PHPEOF'
+<?php
+define('APP_NAME', 'Cozinha da Vizinha Doces');
+define('APP_ROOT', dirname(__DIR__));
+define('VIEWS_PATH', APP_ROOT . '/views');
+define('BASE_URL', '/corporativo');
+define('WHATSAPP', '5511991906913');
+PHPEOF
+
+# ── app/config/database.php ─────────────────────────────────────────────────
+cat > "$BASE/app/config/database.php" << 'PHPEOF'
+<?php
+define('DB_HOST', 'localhost');
+define('DB_NAME', 'cozinha_da_vizinha');
+define('DB_USER', 'root');
+define('DB_PASS', '');
+define('DB_CHARSET', 'utf8mb4');
+
+function getDB(): PDO {
+    static $pdo = null;
+    if ($pdo === null) {
+        $dsn = "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=" . DB_CHARSET;
+        $pdo = new PDO($dsn, DB_USER, DB_PASS, [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false,
+        ]);
+    }
+    return $pdo;
+}
+PHPEOF
+
+# ── app/core/Model.php (ORM Base) ───────────────────────────────────────────
+cat > "$BASE/app/core/Model.php" << 'PHPEOF'
+<?php
+abstract class Model
+{
+    protected static string $table = '';
+    protected static array  $fillable = [];
+    protected array $attributes = [];
+
+    public function __construct(array $data = [])
+    {
+        $this->fill($data);
+    }
+
+    // ── Mass assignment ─────────────────────────────────────────────────
+    public function fill(array $data): static
+    {
+        foreach (static::$fillable as $key) {
+            if (array_key_exists($key, $data)) {
+                $this->attributes[$key] = $data[$key];
+            }
+        }
+        return $this;
+    }
+
+    // ── Magic getter ────────────────────────────────────────────────────
+    public function __get(string $key): mixed
+    {
+        return $this->attributes[$key] ?? null;
+    }
+
+    public function __set(string $key, mixed $value): void
+    {
+        $this->attributes[$key] = $value;
+    }
+
+    public function __isset(string $key): bool
+    {
+        return isset($this->attributes[$key]);
+    }
+
+    public function getAttributes(): array
+    {
+        return $this->attributes;
+    }
+
+    // ── ORM: Find by ID ─────────────────────────────────────────────────
+    public static function find(int $id): ?static
+    {
+        $sql = "SELECT * FROM " . static::$table . " WHERE id = :id LIMIT 1";
+        $stmt = getDB()->prepare($sql);
+        $stmt->execute([':id' => $id]);
+        $row = $stmt->fetch();
+        return $row ? new static($row) : null;
+    }
+
+    // ── ORM: Get all ────────────────────────────────────────────────────
+    public static function all(string $orderBy = 'id DESC'): array
+    {
+        $sql = "SELECT * FROM " . static::$table . " ORDER BY $orderBy";
+        $stmt = getDB()->query($sql);
+        return array_map(fn($row) => new static($row), $stmt->fetchAll());
+    }
+
+    // ── ORM: Where clause ───────────────────────────────────────────────
+    public static function where(string $column, mixed $value, string $operator = '='): array
+    {
+        $sql = "SELECT * FROM " . static::$table . " WHERE $column $operator :val";
+        $stmt = getDB()->prepare($sql);
+        $stmt->execute([':val' => $value]);
+        return array_map(fn($row) => new static($row), $stmt->fetchAll());
+    }
+
+    // ── ORM: First match ────────────────────────────────────────────────
+    public static function first(string $column, mixed $value): ?static
+    {
+        $results = static::where($column, $value);
+        return $results[0] ?? null;
+    }
+
+    // ── ORM: Create ─────────────────────────────────────────────────────
+    public function create(): bool
+    {
+        $columns = implode(', ', static::$fillable);
+        $placeholders = implode(', ', array_map(fn($c) => ":$c", static::$fillable));
+        $sql = "INSERT INTO " . static::$table . " ($columns) VALUES ($placeholders)";
+        $stmt = getDB()->prepare($sql);
+        foreach (static::$fillable as $col) {
+            $stmt->bindValue(":$col", $this->attributes[$col] ?? null);
+        }
+        $result = $stmt->execute();
+        if ($result) {
+            $this->attributes['id'] = (int) getDB()->lastInsertId();
+        }
+        return $result;
+    }
+
+    // ── ORM: Update ─────────────────────────────────────────────────────
+    public function update(array $data): bool
+    {
+        $this->fill($data);
+        if (empty($this->attributes['id'])) return false;
+        $sets = implode(', ', array_map(fn($c) => "$c = :$c", static::$fillable));
+        $sql = "UPDATE " . static::$table . " SET $sets WHERE id = :id";
+        $stmt = getDB()->prepare($sql);
+        foreach (static::$fillable as $col) {
+            $stmt->bindValue(":$col", $this->attributes[$col] ?? null);
+        }
+        $stmt->bindValue(':id', $this->attributes['id']);
+        return $stmt->execute();
+    }
+
+    // ── ORM: Delete ─────────────────────────────────────────────────────
+    public function delete(): bool
+    {
+        if (empty($this->attributes['id'])) return false;
+        $sql = "DELETE FROM " . static::$table . " WHERE id = :id";
+        $stmt = getDB()->prepare($sql);
+        return $stmt->execute([':id' => $this->attributes['id']]);
+    }
+
+    // ── ORM: Count ──────────────────────────────────────────────────────
+    public static function count(): int
+    {
+        $sql = "SELECT COUNT(*) as total FROM " . static::$table;
+        return (int) getDB()->query($sql)->fetch()['total'];
+    }
+
+    // ── ORM: Paginate ───────────────────────────────────────────────────
+    public static function paginate(int $page = 1, int $perPage = 10): array
+    {
+        $offset = ($page - 1) * $perPage;
+        $sql = "SELECT * FROM " . static::$table . " ORDER BY id DESC LIMIT $perPage OFFSET $offset";
+        $stmt = getDB()->query($sql);
+        $data = array_map(fn($row) => new static($row), $stmt->fetchAll());
+        $total = static::count();
+        return [
+            'data'  => $data,
+            'total' => $total,
+            'page'  => $page,
+            'last_page' => (int) ceil($total / $perPage),
+        ];
+    }
+}
+PHPEOF
+
+# ── app/core/View.php ───────────────────────────────────────────────────────
+cat > "$BASE/app/core/View.php" << 'PHPEOF'
+<?php
+class View
+{
+    public static function render(string $view, array $data = []): void
+    {
+        extract($data, EXTR_SKIP);
+        $viewFile = VIEWS_PATH . '/' . $view . '.php';
+        if (!file_exists($viewFile)) {
+            throw new Exception("View not found: $viewFile");
+        }
+        include VIEWS_PATH . '/layouts/header.php';
+        include $viewFile;
+        include VIEWS_PATH . '/layouts/footer.php';
+    }
+}
+PHPEOF
+
+# ── app/core/Controller.php ─────────────────────────────────────────────────
+cat > "$BASE/app/core/Controller.php" << 'PHPEOF'
+<?php
+class Controller
+{
+    protected function view(string $view, array $data = []): void
+    {
+        View::render($view, $data);
+    }
+
+    protected function json(array $data, int $code = 200): void
+    {
+        http_response_code($code);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode($data, JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    protected function redirect(string $url): void
+    {
+        header("Location: " . BASE_URL . $url);
+        exit;
+    }
+
+    protected function sanitize(string $str): string
+    {
+        return htmlspecialchars(trim($str), ENT_QUOTES, 'UTF-8');
+    }
+}
+PHPEOF
+
+# ── app/core/Router.php ─────────────────────────────────────────────────────
+cat > "$BASE/app/core/Router.php" << 'PHPEOF'
+<?php
+class Router
+{
+    private array $routes = [];
+
+    public function get(string $path, string $handler): void
+    {
+        $this->routes['GET'][$path] = $handler;
+    }
+
+    public function post(string $path, string $handler): void
+    {
+        $this->routes['POST'][$path] = $handler;
+    }
+
+    public function dispatch(): void
+    {
+        $method = $_SERVER['REQUEST_METHOD'];
+        $url = $_GET['url'] ?? '/';
+        $url = rtrim($url, '/') ?: '/';
+
+        if (!isset($this->routes[$method])) {
+            http_response_code(405);
+            echo 'Method Not Allowed';
+            return;
+        }
+
+        $matched = false;
+        foreach ($this->routes[$method] as $route => $handler) {
+            $pattern = preg_replace('/\{[^}]+\}/', '([^/]+)', $route);
+            if (preg_match('#^' . $pattern . '$#', $url, $matches)) {
+                $matched = true;
+                array_shift($matches);
+                $this->callAction($handler, $matches);
+                break;
+            }
+        }
+
+        if (!$matched) {
+            http_response_code(404);
+            echo 'Página não encontrada';
+        }
+    }
+
+    private function callAction(string $handler, array $params = []): void
+    {
+        [$controller, $action] = explode('@', $handler);
+        if (!class_exists($controller)) {
+            throw new Exception("Controller not found: $controller");
+        }
+        $instance = new $controller();
+        if (!method_exists($instance, $action)) {
+            throw new Exception("Action not found: $action on $controller");
+        }
+        call_user_func_array([$instance, $action], $params);
+    }
+}
+PHPEOF
+
+# ── app/models/Product.php ──────────────────────────────────────────────────
+cat > "$BASE/app/models/Product.php" << 'PHPEOF'
+<?php
+class Product extends Model
+{
+    protected static string $table = 'products';
+    protected static array  $fillable = [
+        'name', 'description', 'image', 'category', 'price', 'active', 'sort_order'
+    ];
+
+    public static function active(): array
+    {
+        return self::where('active', 1);
+    }
+
+    public static function byCategory(string $category): array
+    {
+        $sql = "SELECT * FROM " . static::$table . " WHERE category = :cat AND active = 1 ORDER BY sort_order ASC";
+        $stmt = getDB()->prepare($sql);
+        $stmt->execute([':cat' => $category]);
+        return array_map(fn($row) => new static($row), $stmt->fetchAll());
+    }
+
+    public function formatPrice(): string
+    {
+        return 'R$ ' . number_format($this->price ?? 0, 2, ',', '.');
+    }
+}
+PHPEOF
+
+# ── app/models/Testimonial.php ──────────────────────────────────────────────
+cat > "$BASE/app/models/Testimonial.php" << 'PHPEOF'
+<?php
+class Testimonial extends Model
+{
+    protected static string $table = 'testimonials';
+    protected static array  $fillable = [
+        'name', 'title', 'text', 'image', 'active', 'sort_order'
+    ];
+
+    public static function active(): array
+    {
+        return self::where('active', 1);
+    }
+}
+PHPEOF
+
+# ── app/models/Contact.php ──────────────────────────────────────────────────
+cat > "$BASE/app/models/Contact.php" << 'PHPEOF'
+<?php
+class Contact extends Model
+{
+    protected static string $table = 'contacts';
+    protected static array  $fillable = [
+        'name', 'phone', 'email', 'message', 'ip_address'
+    ];
+}
+PHPEOF
+
+# ── app/models/Setting.php ──────────────────────────────────────────────────
+cat > "$BASE/app/models/Setting.php" << 'PHPEOF'
+<?php
+class Setting extends Model
+{
+    protected static string $table = 'settings';
+    protected static array  $fillable = ['key_name', 'value'];
+
+    public static function get(string $key, string $default = ''): string
+    {
+        $row = self::first('key_name', $key);
+        return $row ? $row->value : $default;
+    }
+
+    public static function set(string $key, string $value): bool
+    {
+        $row = self::first('key_name', $key);
+        if ($row) {
+            return $row->update(['value' => $value]);
+        }
+        $model = new self(['key_name' => $key, 'value' => $value]);
+        return $model->create();
+    }
+
+    public static function allGrouped(): array
+    {
+        $rows = self::all();
+        $grouped = [];
+        foreach ($rows as $row) {
+            $grouped[$row->key_name] = $row->value;
+        }
+        return $grouped;
+    }
+}
+PHPEOF
+
+# ── app/controllers/HomeController.php ───────────────────────────────────────
+cat > "$BASE/app/controllers/HomeController.php" << 'PHPEOF'
+<?php
+class HomeController extends Controller
+{
+    public function index(): void
+    {
+        try {
+            $products = Product::active();
+            $testimonials = Testimonial::active();
+            $settings = Setting::allGrouped();
+        } catch (Exception $e) {
+            // Fallback for when DB is not yet configured
+            $products = $this->defaultProducts();
+            $testimonials = $this->defaultTestimonials();
+            $settings = $this->defaultSettings();
+        }
+
+        $this->view('home/index', [
+            'products'     => $products,
+            'testimonials' => $testimonials,
+            'settings'     => $settings,
+        ]);
+    }
+
+    public function apiProducts(): void
+    {
+        try {
+            $products = Product::active();
+            $data = array_map(fn($p) => $p->getAttributes(), $products);
+            $this->json(['success' => true, 'data' => $data]);
+        } catch (Exception $e) {
+            $this->json(['success' => false, 'error' => $e->getMessage()], 500);
+        }
+    }
+
+    private function defaultProducts(): array
+    {
+        return [
+            new Product([
+                'id' => 1, 'name' => 'Bolos Personalizados',
+                'description' => 'Bolos deliciosos e personalizados, feitos especialmente para refletir a sua marca!',
+                'image' => BASE_URL . '/assets/images/bolo.png',
+                'category' => 'bolos', 'price' => 0, 'active' => 1, 'sort_order' => 1,
+            ]),
+            new Product([
+                'id' => 2, 'name' => 'Cupcakes',
+                'description' => 'Cupcakes fofinhos com logotipo, decoração e fita personalizada.',
+                'image' => BASE_URL . '/assets/images/cupcake.png',
+                'category' => 'cupcakes', 'price' => 0, 'active' => 1, 'sort_order' => 2,
+            ]),
+            new Product([
+                'id' => 3, 'name' => 'Pães de Mel',
+                'description' => 'Pães de mel irresistíveis, feitos sob medida para sua necessidade.',
+                'image' => BASE_URL . '/assets/images/pao-de-mel.png',
+                'category' => 'paes-de-mel', 'price' => 0, 'active' => 1, 'sort_order' => 3,
+            ]),
+            new Product([
+                'id' => 4, 'name' => 'Macarons e Biscoitos',
+                'description' => 'Macarons, Biscoitos e muitas outras delícias personalizadas para sua empresa.',
+                'image' => BASE_URL . '/assets/images/macaron.png',
+                'category' => 'outros', 'price' => 0, 'active' => 1, 'sort_order' => 4,
+            ]),
+        ];
+    }
+
+    private function defaultTestimonials(): array
+    {
+        return [
+            new Testimonial([
+                'id' => 1, 'name' => 'Revista Business Alphaville', 'title' => '',
+                'text' => 'Os doces estavam maravilhosos e a personalização deu um charme a mais. Tudo muito lindo e de bom gosto.',
+                'image' => BASE_URL . '/assets/images/avatar-1.png', 'active' => 1, 'sort_order' => 1,
+            ]),
+            new Testimonial([
+                'id' => 2, 'name' => 'Tata Estanieck — Morana Joias', 'title' => 'Bolo de 30 anos',
+                'text' => 'E esse bolo, gente?! Olha aqui! Euzinha com a minha sacolinha da Morana, eu amei!!',
+                'image' => BASE_URL . '/assets/images/avatar-2.png', 'active' => 1, 'sort_order' => 2,
+            ]),
+            new Testimonial([
+                'id' => 3, 'name' => 'Rogerio Lins, Prefeito de Osasco', 'title' => '',
+                'text' => 'O bolo estava uma delícia e muito bonito.',
+                'image' => BASE_URL . '/assets/images/avatar-3.png', 'active' => 1, 'sort_order' => 3,
+            ]),
+            new Testimonial([
+                'id' => 4, 'name' => 'Pamela Domingues e Regiane Tapias', 'title' => 'TV Gazeta — Mulheres',
+                'text' => 'Quanta Delicadeza, Renata, que gracinha, amamos...',
+                'image' => BASE_URL . '/assets/images/avatar-4.png', 'active' => 1, 'sort_order' => 4,
+            ]),
+        ];
+    }
+
+    private function defaultSettings(): array
+    {
+        return [
+            'whatsapp'      => WHATSAPP,
+            'phone'         => '(11) 99190-6913',
+            'email'         => 'contato@cozinhadavizinhadoces.com.br',
+            'facebook'      => 'https://www.facebook.com/docesdavizinha',
+            'youtube'       => 'https://www.youtube.com/@cozinhadavizinhadoces',
+            'instagram'     => 'https://www.instagram.com/cozinhadavizinhasp',
+            'pinterest'     => 'https://br.pinterest.com/cozinhadavizinha/',
+        ];
+    }
+}
+PHPEOF
+
+# ── app/controllers/ContactController.php ────────────────────────────────────
+cat > "$BASE/app/controllers/ContactController.php" << 'PHPEOF'
+<?php
+class ContactController extends Controller
+{
+    public function store(): void
+    {
+        $name    = $this->sanitize($_POST['name'] ?? '');
+        $phone   = $this->sanitize($_POST['phone'] ?? '');
+        $email   = $this->sanitize($_POST['email'] ?? '');
+        $message = $this->sanitize($_POST['message'] ?? '');
+
+        $errors = [];
+        if (empty($name))    $errors[] = 'Nome é obrigatório.';
+        if (empty($phone))   $errors[] = 'Telefone é obrigatório.';
+        if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $errors[] = 'E-mail válido é obrigatório.';
+        }
+
+        if (!empty($errors)) {
+            $_SESSION['form_errors'] = $errors;
+            $_SESSION['form_old'] = compact('name', 'phone', 'email', 'message');
+            $this->redirect('/#contato');
+        }
+
+        try {
+            $contact = new Contact([
+                'name'      => $name,
+                'phone'     => $phone,
+                'email'     => $email,
+                'message'   => $message,
+                'ip_address'=> $_SERVER['REMOTE_ADDR'] ?? '',
+            ]);
+            $contact->create();
+            $_SESSION['form_success'] = 'Mensagem enviada com sucesso! A Chef Renatinha entrará em contato em breve.';
+        } catch (Exception $e) {
+            $_SESSION['form_errors'] = ['Erro ao enviar. Tente novamente.'];
+            $_SESSION['form_old'] = compact('name', 'phone', 'email', 'message');
+        }
+
+        $this->redirect('/#contato');
+    }
+}
+PHPEOF
+
+# ── app/views/layouts/header.php ─────────────────────────────────────────────
+cat > "$BASE/app/views/layouts/header.php" << 'PHPEOF'
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= APP_NAME ?> — Doces premium personalizáveis para ocasiões corporativas</title>
+    <meta name="description" content="Doces artesanais premium e totalmente personalizáveis para eventos corporativos, brindes e datas comemorativas.">
+    <meta name="robots" content="index, follow">
+    <link rel="icon" href="<?= BASE_URL ?>/assets/images/favicon.png" type="image/png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Sacramento&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="<?= BASE_URL ?>/assets/css/style.css">
+</head>
+<body>
+PHPEOF
+
+# ── app/views/layouts/footer.php ─────────────────────────────────────────────
+cat > "$BASE/app/views/layouts/footer.php" << 'PHPEOF'
+
+    <!-- WhatsApp Float -->
+    <div class="whatsapp-float" id="whatsappFloat">
+        <div class="whatsapp-bubble" id="whatsappBubble">Posso ajudar?</div>
+        <a href="https://wa.me/<?= $settings['whatsapp'] ?? WHATSAPP ?>" target="_blank" class="whatsapp-btn" aria-label="WhatsApp">
+            <svg viewBox="0 0 448 512" width="28" height="28" fill="#fff"><path d="M380.9 97.1C339 55.1 283.2 32 223.9 32c-122.4 0-222 99.6-222 222 0 39.1 10.2 77.3 29.6 111L0 480l117.7-30.9c32.4 17.7 68.9 27 106.1 27h.1c122.3 0 224.1-99.6 224.1-222 0-59.3-25.2-115-67.1-157zM223.9 414.8c-32.5 0-64.3-8.7-92-25.2l-6.6-3.9-68.2 17.9 18.2-66.5-4.3-6.8c-18-28.6-27.5-61.8-27.5-95.7 0-103.4 84.2-187.5 187.5-187.5 50.1 0 97.2 19.5 132.6 54.9 35.4 35.4 54.9 82.5 54.9 132.6 0 103.4-84.2 187.5-187.6 187.5zM330.3 273.7c-5.6-2.8-33.2-16.4-38.3-18.3-5.1-1.9-8.8-2.8-12.5 2.8-3.7 5.6-14.3 18.3-17.5 22-3.2 3.7-6.4 4.2-12 1.4-32.6-16.3-54-29.1-75.5-66-5.7-9.8 5.7-9.1 16.3-31.2 1.8-3.7.9-6.9-.5-9.7-1.4-2.8-12.5-30.1-17.1-41.2-4.5-11.1-9.1-9.3-12.5-9.3-3.2 0-6.9 1.1-10.6 3.4-3.7 2.3-24.3 23.8-24.3 58 0 34.3 24.9 67.4 28.4 72.1 3.5 4.7 49.1 74.9 119 105 16.6 7.2 29.6 11.5 39.7 14.7 16.7 5.3 31.9 4.6 43.9 2.8 13.4-2 41.2-16.8 47-33.1 5.8-16.3 5.8-30.3 4-33.1-1.7-2.8-6.4-4.2-12.9-6.9z"/></svg>
+        </a>
+    </div>
+
+    <script src="<?= BASE_URL ?>/assets/js/main.js"></script>
+</body>
+</html>
+PHPEOF
+
+# ── app/views/home/index.php ────────────────────────────────────────────────
+cat > "$BASE/app/views/home/index.php" << 'PHPEOF'
+<?php
+$flashError   = $_SESSION['form_errors']   ?? null;
+$flashSuccess = $_SESSION['form_success']  ?? null;
+$oldInput     = $_SESSION['form_old']      ?? [];
+unset($_SESSION['form_errors'], $_SESSION['form_success'], $_SESSION['form_old']);
+?>
+
+<!-- ═══ HERO ═══ -->
+<section class="hero">
+    <div class="hero-bg"></div>
+    <div class="hero-content">
+        <h1 class="hero-title">Doces premium, sofisticados e<br> totalmente personalizáveis para tornar<br> seu evento corporativo ainda mais especial.</h1>
+        <a href="#contato" class="btn btn-primary">Contato</a>
+    </div>
+    <div class="hero-curve"></div>
+</section>
+
+<!-- ═══ INTRO ═══ -->
+<section class="section intro">
+    <div class="container">
+        <h2 class="section-title">Encante-se com a delicadeza dos doces artesanais personalizados</h2>
+        <div class="intro-text">
+            <p>Surpreenda-se com a união perfeita entre sabor e personalização, tornando qualquer evento corporativo uma experiência mais doce e inesquecível.</p>
+            <p>Nossos doces artesanais são cuidadosamente preparados para encantar seus funcionários, clientes e parceiros.</p>
+            <p>Utilizamos ingredientes nobres e tecnologia de ponta para personalizar cada detalhe de acordo com a identidade da sua marca e seus objetivos.</p>
+            <p><strong>O que você imaginar, nós transformamos em doces irresistíveis!</strong></p>
+        </div>
+    </div>
+</section>
+
+<!-- ═══ PRODUCTS ═══ -->
+<section class="section products">
+    <div class="container">
+        <div class="product-grid">
+            <?php foreach ($products as $product): ?>
+            <div class="product-card">
+                <div class="product-img">
+                    <img src="<?= htmlspecialchars($product->image) ?>" alt="<?= htmlspecialchars($product->name) ?>" loading="lazy">
+                </div>
+                <div class="product-info">
+                    <p class="product-desc"><?= htmlspecialchars($product->description) ?></p>
+                </div>
+            </div>
+            <?php endforeach; ?>
+        </div>
+        <div class="text-center mt-12">
+            <a href="#contato" class="btn btn-primary">Conheça nosso Catálogo</a>
+        </div>
+    </div>
+</section>
+
+<!-- ═══ DIFFERENTIALS ═══ -->
+<section class="section differentials">
+    <div class="container">
+        <h2 class="section-title">Brindes corporativos, eventos e muito mais!</h2>
+        <div class="diff-grid">
+            <div class="diff-card">
+                <div class="diff-icon">
+                    <svg viewBox="0 0 512 512" width="48" height="48" fill="#8B1A4A"><path d="M405.3 282.6c4.5-7.4 6.7-14.6 7.7-19.8.8-4.1-1.8-8-5.8-8.9-4.1-.8-8 1.8-8.9 5.8-2.4 11.9-8.3 18.3-9.1 19.8-6.6.6-12.4 3.1-16.7 7-10.6-9.5-28.2-9.5-38.8 0-10.6-9.5-28.2-9.5-38.8 0-10.6-9.5-28.2-9.5-38.8 0-10.6-9.5-28.2-9.5-38.8 0-10.6-9.5-28.2-9.5-38.8 0-1.4-1.3-3.1-2.4-4.8-3.4 26.1-36 74.4-34 170.1-41.3 22.1-1.7 57.4-9.5 72.5-25.4 5.5 3 12.2 8.1 16.8 16.1 2 3.6 6.6 4.9 10.2 2.8 3.6-2 4.9-6.6 2.8-10.2-5.9-10.5-14.5-17.2-21.6-21.3 5.6-13.1 5.8-30.1-4-46.1-9.5-15.4-21.6-25-28.2-29.6 4.2-20.9 1.8-38.7-7.3-53-14.3-22.6-39.9-27.7-41-27.9-6.7-1.3-11.5 6.3-7.5 11.8 5.4 7.5 4.8 12.4 3.8 15.5-7.2 23.2-75.3 44.9-100.7 54l-5.7-22.9c39.8-62.3 31.8-49.9 32.9-51.6 7.7-12.2 7.2-27.2-1.2-39.1-15.3-21.7-46.6-18.8-59.1 2.4-20.3-13.9-49.9-3.2-54.6 22.8-2.6 14.3 3.4 28 15.5 35.9l51.8 32.9 6.1 24.7c-14.5 5.4-26.6 10.5-34.7 15.9-24.9 16.5-36.4 39.8-32.7 66.1-22.7 18.9-26.7 43.5-14 67.9-8.8 5.2-12.6 14.2-11.6 20.1.7 4.6 11.2 72.6 11.8 76.5.6 4.1 4.5 6.9 8.6 6.3 4.1-.6 6.9-4.5 6.3-8.6l-4.6-29.8h281.4l-14.6 94.6H81.3l-5-32.6c-.6-4.1-4.5-6.9-8.6-6.3-4.1.6-6.9 4.5-6.3 8.6 1.2 7.6 10.7 69.4 11.7 76.2 2.1 13.5 13.5 23.3 27.2 23.3h214.2c13.7 0 25.1-9.8 27.2-23.3.7-4.7 28.5-185.1 28.5-186.1 0-8.5-5.4-16-13.5-20z"/></svg>
+                </div>
+                <p class="diff-label">Ingredientes de alta qualidade</p>
+            </div>
+            <div class="diff-card">
+                <div class="diff-icon">
+                    <svg viewBox="0 0 512 512" width="48" height="48" fill="#8B1A4A"><path d="M502 196.3c-17.7 0-36.8-10.1-36.8-32.2v-83.4c0-42.2-34.3-76.5-76.5-76.5s-76.5 34.3-76.5 76.5v18.4l-80.9-5.5c-2.9-.2-5.7.9-7.8 2.9L12.1 308.4c-16.1 16.1-16.1 42.2 0 58.3l32.8 32.8c3.9 3.9 10.3 3.9 14.2 0s3.9-10.3 0-14.2L26.3 352.5c-8.3-8.3-8.3-21.7 0-29.9L234.4 114.3l77.7 5.3v37.2c-4.3 1.5-8.3 3.9-11.8 7.3-12 12-12 31.6 0 43.6 6 6 13.9 9 21.8 9s15.8-3 21.8-9c12-12 12-31.6 0-43.6-3.4-3.4-7.5-5.9-11.8-7.3v-35.8l48.8 3.3 12.7 149.4-208.1 208.1c-8.3 8.3-21.7 8.3-29.9 0l-32.9-32.9c-3.9-3.9-10.3-3.9-14.2 0s-3.9 10.3 0 14.2l32.9 32.9c8 8 18.6 12 29.1 12s21.1-4 29.1-12L405.7 260c2.1-2.1 3.1-5 2.9-7.9l-13.8-162.6c-.4-4.9-4.4-8.8-9.3-9.1l-58.8-4v-19.7c0-31.1 25.3-56.5 56.5-56.5s56.5 25.3 56.5 56.5v83.4c0 30.3 23.9 52.2 56.8 52.2 5.5 0 10-4.5 10-10s-4.5-10-10-10z"/></svg>
+                </div>
+                <p class="diff-label">Preços competitivos</p>
+            </div>
+            <div class="diff-card">
+                <div class="diff-icon">
+                    <svg viewBox="0 0 48 48" width="48" height="48" fill="#8B1A4A"><path d="M6.3 25.7a5.9 5.9 0 002.6 4.2l14.6 9.4a.7.7 0 00.8 0l14.8-9.2a5.9 5.9 0 002.6-4.4V12.5a6.1 6.1 0 00-3-4.8 14.5 14.5 0 00-12.8-.9l-1.8.8-1.8-.8a14.6 14.6 0 00-12.9.7 6.1 6.1 0 00-3.1 4.7v13.6zm1.5-13.5a4.6 4.6 0 012.4-3.5 12.9 12.9 0 0111.4-.6l2.1.9a.8.8 0 00.6 0l2.1-.9a12.9 12.9 0 0111.4.8 4.6 4.6 0 012.4 3.6 4.2 4.2 0 01-1.9 3.4l-14.4 8.9-11.8-7.6a.75.75 0 00-.8 1.3l12.2 7.8a.7.7 0 00.8 0l14.8-9.2a7.8 7.8 0 001.1-1v9.5a4.4 4.4 0 01-1.9 3.2l-14.4 8.9-14.2-9.1a4.5 4.5 0 01-1.9-3v-6.1a2.8 2.8 0 01.9 1.1c.4 1.1.6 2.2.7 2l.1.5c.6 2.4 2 2.9 3.2 2.6a4 4 0 001.2-.5l.5-.2a1.2 1.2 0 011.4.5c.7 1.5 1 2.5 1.3 3.7a9.6 9.6 0 00.6 2 3.7 3.7 0 003 1.9h.1a2.8 2.8 0 002.8-2c.1-.3.2-.7.2-1l.1-.5a.4.4 0 01.2-.3.4.4 0 01.3 0c2.1 1 3.8 1 5.2-.1a5.5 5.5 0 001.5-2.3 5 5 0 01.9-1.7c.4-.4.9-.5 2-.2a4.3 4.3 0 003.1-.4 2.4 2.4 0 001.3-1.9c.1-.3.2-.7.3-1.1a.75.75 0 00-1.4-.5 7.2 7.2 0 00-.4 1.4c-.1.4-.2.7-.4.8a2.8 2.8 0 01-2.1.3 3.3 3.3 0 00-3.5.5 6 6 0 00-1.3 2.2 4.4 4.4 0 01-1 1.7c-.3.3-1.3 1-3.6-.1a1.8 1.8 0 00-1.6-.1 1.9 1.9 0 00-1 1.3l-.1.5c-.1.3-.1.6-.2.9a1.4 1.4 0 01-1.4.9 2.2 2.2 0 01-1.8-1.2 11.8 11.8 0 01-.5-1.6 14.1 14.1 0 00-1.5-4.2 2.7 2.7 0 00-3.3-.9l-.5.3a2.5 2.5 0 01-.8.3c-.8.2-1.2-1-1.4-1.6l-.1-.5a11.7 11.7 0 00-.8-2.3 4 4 0 00-2.3-2.1v-1.9a7.9 7.9 0 001 .9.75.75 0 00.9-1.2 4.3 4.3 0 01-1.9-3.5z"/></svg>
+                </div>
+                <p class="diff-label">Transformamos suas ideias em doces únicos</p>
+            </div>
+            <div class="diff-card">
+                <div class="diff-icon">
+                    <svg viewBox="0 0 480 480" width="48" height="48" fill="#8B1A4A"><path d="M453.1 401h-.03l-3.3-4.9c-18.5-27.6-47.5-46.4-80.3-51.9-4.4-.6-8.4 2.4-9.1 6.8-.6 4.2 2.2 8.2 6.4 9 23.6 4 45.2 16 61 34-13.3 2.4-25 10.4-32 22-8.6 15.4-3.1 34.9 12.3 43.5 15.4 8.6 34.9 3.1 43.5-12.3 3.3-6.4 5.1-13.4 5.2-20.5 8.5 12.4 9.2 28.5 1.8 41.5-2.3 3.8-1 8.7 2.8 11 3.8 2.3 8.7 1 11-2.8.1-.1.1-.2.2-.4 15.5-27.3 7-60.4-17.5-76z"/><path d="M327.4 301.1c-1.5-4.2-6.1-6.3-10.2-4.8-4.2 1.5-6.3 6.1-4.8 10.2.04.1.08.2.1.3 7.3 19 7.8 33.6 1.4 40-7.7 7.7-27 5.3-51.6-6.4-32.9-17.1-62.8-39.4-88.6-66.1-62.7-62.7-88.5-124.2-72.5-140.2 5.1-4 11.7-5.6 18.1-4.2 4.4.3 8.2-3 8.6-7.4.3-4.3-2.8-8-7-8.5-11.1-2-22.5 1.3-31 8.8-29.3 29.3 15.5 105.7 72.5 162.8 27 28 58.4 51.3 93 69.2l-56.8 21.6c-75.9-28.9-130.5-96.1-143.2-176.4-.7-4.4-4.8-7.3-9.1-6.6-4.4.7-7.3 4.8-6.6 9.1 1.3 8 2.9 16 5 23.8 18.4 69.8 66.9 127.8 132.4 158.2l-93.6 35.4c-.4-.7-1-1.4-1.6-1.9-23.8-19.1-38.7-47.1-41.3-77.5l-3.7-45c-.3-4.4-4.1-7.6-8.4-7.4-4.4.4-7.7 4.2-7.3 8.6 0 .1 0 .1 0 .1l3.8 44.9c2.8 32.5 18 62.6 42.3 84.3l-66.7 25.3 12-49.2c1-4.3-1.6-8.6-5.9-9.7-4.3-1-8.6 1.6-9.7 5.9l-15.6 64c-1.1 4.3 1.6 8.6 5.9 9.7 1.6.4 3.2.3 4.7-.3l296-112c.5-.2.9-.5 1.3-.8 6.4-1 12.3-3.9 17-8.5 20.3-20.3 26.7-36.5 14.1-69.2z"/></svg>
+                </div>
+                <p class="diff-label">Desde pequenas quantidades até super eventos</p>
+            </div>
+        </div>
+        <div class="text-center mt-12">
+            <a href="#contato" class="btn btn-primary">Faça um orçamento</a>
+        </div>
+    </div>
+</section>
+
+<!-- ═══ ABOUT ═══ -->
+<section class="section about">
+    <div class="container about-grid">
+        <div class="about-text">
+            <h2 class="about-label">Cozinha da Vizinha Doces:</h2>
+            <h3 class="about-heading">Uma História de Paixão e Sabor</h3>
+            <p>A <strong>Cozinha da Vizinha Doces</strong> foi fundada em 2018 por Renata Treves, uma apaixonada por criar doces que sempre encantou seus vizinhos com suas delícias caseiras. Desde cedo, ela levava amostras para que todos pudessem experimentar e se apaixonar pelo sabor único de suas receitas.</p>
+            <p>Com a demanda crescendo rapidamente, Renata decidiu seguir seu sonho, aprimorando constantemente suas habilidades para oferecer produtos cada vez mais bonitos e irresistíveis.</p>
+            <p>Guiada pelo lema <strong>"Se você pode sonhar, nós podemos realizar"</strong>, a Cozinha da Vizinha Doces se dedica a transformar ideias em realidade, criando doces que encantam e surpreendem a cada mordida.</p>
+            <p>Hoje, Renata e sua equipe preparam cada produto com extremo cuidado e atenção aos detalhes, proporcionando uma experiência única para cada cliente.</p>
+        </div>
+        <div class="about-img">
+            <img src="<?= BASE_URL ?>/assets/images/renatinha.png" alt="Chef Renata Treves" loading="lazy">
+        </div>
+    </div>
+</section>
+
+<!-- ═══ TESTIMONIALS ═══ -->
+<section class="section testimonials">
+    <div class="container">
+        <h2 class="section-title">O que dizem nossos clientes:</h2>
+        <div class="testimonial-carousel" id="testimonialCarousel">
+            <div class="testimonial-track" id="testimonialTrack">
+                <?php foreach ($testimonials as $i => $t): ?>
+                <div class="testimonial-slide" data-index="<?= $i ?>">
+                    <div class="testimonial-card">
+                        <div class="testimonial-avatar">
+                            <img src="<?= htmlspecialchars($t->image) ?>" alt="<?= htmlspecialchars($t->name) ?>" loading="lazy">
+                        </div>
+                        <blockquote class="testimonial-text">"<?= htmlspecialchars($t->text) ?>"</blockquote>
+                        <cite class="testimonial-name">
+                            <?= htmlspecialchars($t->name) ?>
+                            <?php if (!empty($t->title)): ?><br><small><?= htmlspecialchars($t->title) ?></small><?php endif; ?>
+                        </cite>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            </div>
+            <div class="carousel-controls">
+                <button class="carousel-btn carousel-prev" id="carouselPrev" aria-label="Anterior">
+                    <svg viewBox="0 0 1000 1000" width="20" height="20"><path d="M646 125c-17 0-33 8-42 17L308 442c-12 12-16 29-16 45s4 33 16 45l296 321c13 13 25 21 42 21 17 0 33-4 46-17 12-12 21-29 21-46s-4-33-21-45L438 487l254-262c8-8 16-21 16-38s-4-33-16-45c-17-13-29-17-46-17z"/></svg>
+                </button>
+                <div class="carousel-dots" id="carouselDots"></div>
+                <button class="carousel-btn carousel-next" id="carouselNext" aria-label="Próximo">
+                    <svg viewBox="0 0 1000 1000" width="20" height="20"><path d="M696 533c12-12 17-29 17-46s-5-33-17-41L400 146c-12-13-25-21-46-21-16 0-29 4-41 17-13 12-21 29-21 45s4 34 16 46l255 259-259 279c-12 12-16 29-16 46s8 33 20 46c13 8 30 12 46 12 17 0 34-8 46-21l296-321z"/></svg>
+                </button>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ═══ CONTACT ═══ -->
+<section class="section contact" id="contato">
+    <div class="container contact-grid">
+        <div class="contact-img">
+            <img src="<?= BASE_URL ?>/assets/images/renatinha-contato.png" alt="Chef Renatinha" loading="lazy">
+        </div>
+        <div class="contact-form-wrap">
+            <h2 class="section-title text-left">Preencha o formulário e logo a Chef<br>Renatinha entrará em contato!</h2>
+
+            <?php if ($flashSuccess): ?>
+                <div class="alert alert-success"><?= htmlspecialchars($flashSuccess) ?></div>
+            <?php endif; ?>
+            <?php if ($flashError): ?>
+                <div class="alert alert-error">
+                    <ul><?php foreach ($flashError as $e): ?><li><?= htmlspecialchars($e) ?></li><?php endforeach; ?></ul>
+                </div>
+            <?php endif; ?>
+
+            <form method="POST" action="<?= BASE_URL ?>/contato" class="contact-form" id="contactForm">
+                <div class="form-row">
+                    <div class="form-group form-group-60">
+                        <input type="text" name="name" id="fieldName" placeholder="Nome" required
+                               value="<?= htmlspecialchars($oldInput['name'] ?? '') ?>">
+                    </div>
+                    <div class="form-group form-group-40">
+                        <input type="tel" name="phone" id="fieldPhone" placeholder="Telefone" required
+                               value="<?= htmlspecialchars($oldInput['phone'] ?? '') ?>">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <input type="email" name="email" id="fieldEmail" placeholder="E-mail" required
+                           value="<?= htmlspecialchars($oldInput['email'] ?? '') ?>">
+                </div>
+                <div class="form-group">
+                    <textarea name="message" id="fieldMessage" rows="4" placeholder="Mensagem"><?= htmlspecialchars($oldInput['message'] ?? '') ?></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary btn-full">Enviar</button>
+            </form>
+        </div>
+    </div>
+</section>
+
+<!-- ═══ FOOTER ═══ -->
+<footer class="footer">
+    <div class="container footer-inner">
+        <h3 class="footer-title">Nos siga nas redes sociais e fique por dentro de todas as novidades!</h3>
+        <div class="social-links">
+            <?php if (!empty($settings['facebook'])): ?>
+            <a href="<?= htmlspecialchars($settings['facebook']) ?>" target="_blank" aria-label="Facebook">
+                <svg viewBox="0 0 512 512" width="24" height="24" fill="currentColor"><path d="M504 256C504 119 393 8 256 8S8 119 8 256c0 123.8 90.7 226.4 209.3 245V327.7h-63V256h63v-54.6c0-62.2 37-96.5 93.7-96.5 27.1 0 55.5 4.8 55.5 4.8v61h-31.3c-30.8 0-40.4 19.1-40.4 38.7V256h68.8l-11 71.7h-57.8V501C413.3 482.4 504 379.8 504 256z"/></svg>
+            </a>
+            <?php endif; ?>
+            <?php if (!empty($settings['youtube'])): ?>
+            <a href="<?= htmlspecialchars($settings['youtube']) ?>" target="_blank" aria-label="YouTube">
+                <svg viewBox="0 0 576 512" width="24" height="24" fill="currentColor"><path d="M549.7 124.1c-6.3-23.7-24.8-42.3-48.3-48.6C458.8 64 288 64 288 64S117.2 64 74.6 75.5c-23.5 6.3-42 24.9-48.3 48.6-11.4 42.9-11.4 132.3-11.4 132.3s0 89.4 11.4 132.3c6.3 23.7 24.8 41.5 48.3 47.8C117.2 448 288 448 288 448s170.8 0 213.4-11.5c23.5-6.3 42-24.2 48.3-47.8 11.4-42.9 11.4-132.3 11.4-132.3s0-89.4-11.4-132.3zM232 336V176l152 80-152 80z"/></svg>
+            </a>
+            <?php endif; ?>
+            <?php if (!empty($settings['instagram'])): ?>
+            <a href="<?= htmlspecialchars($settings['instagram']) ?>" target="_blank" aria-label="Instagram">
+                <svg viewBox="0 0 448 512" width="24" height="24" fill="currentColor"><path d="M224.1 141c-63.6 0-114.9 51.3-114.9 114.9s51.3 114.9 114.9 114.9S339 319.5 339 255.9 287.7 141 224.1 141zm0 189.6c-41.1 0-74.7-33.5-74.7-74.7s33.5-74.7 74.7-74.7 74.7 33.5 74.7 74.7-33.6 74.7-74.7 74.7zm146.4-194.3c0 14.9-12 26.8-26.8 26.8-14.9 0-26.8-12-26.8-26.8s12-26.8 26.8-26.8 26.8 12 26.8 26.8zm76.1 27.2c-1.7-35.9-9.9-67.7-36.2-93.9-26.2-26.2-58-34.4-93.9-36.2-37-2.1-147.9-2.1-184.9 0-35.8 1.7-67.6 9.9-93.9 36.1s-34.4 58-36.2 93.9c-2.1 37-2.1 147.9 0 184.9 1.7 35.9 9.9 67.7 36.2 93.9s58 34.4 93.9 36.2c37 2.1 147.9 2.1 184.9 0 35.9-1.7 67.7-9.9 93.9-36.2 26.2-26.2 34.4-58 36.2-93.9 2.1-37 2.1-147.8 0-184.8zM398.8 388c-7.8 19.6-22.9 34.7-42.6 42.6-29.5 11.7-99.5 9-132.1 9s-102.7 2.6-132.1-9c-19.6-7.8-34.7-22.9-42.6-42.6-11.7-29.5-9-99.5-9-132.1s-2.6-102.7 9-132.1c7.8-19.6 22.9-34.7 42.6-42.6 29.5-11.7 99.5-9 132.1-9s102.7-2.6 132.1 9c19.6 7.8 34.7 22.9 42.6 42.6 11.7 29.5 9 99.5 9 132.1s2.7 102.7-9 132.1z"/></svg>
+            </a>
+            <?php endif; ?>
+            <?php if (!empty($settings['pinterest'])): ?>
+            <a href="<?= htmlspecialchars($settings['pinterest']) ?>" target="_blank" aria-label="Pinterest">
+                <svg viewBox="0 0 496 512" width="24" height="24" fill="currentColor"><path d="M496 256c0 137-111 248-248 248-25.6 0-50.2-3.9-73.4-11.1 10.1-16.5 25.2-43.5 30.8-65 3-11.6 15.4-59 15.4-59 8.1 15.4 31.7 28.5 56.8 28.5 74.8 0 128.7-68.8 128.7-154.3 0-81.9-66.9-143.2-152.9-143.2-107 0-163.9 71.8-163.9 150.1 0 36.4 19.4 81.7 50.3 96.1 4.7 2.2 7.2 1.2 8.3-3.3.8-3.4 5-20.3 6.9-28.1.6-2.5.3-4.7-1.7-7.1-10.1-12.5-18.3-35.3-18.3-56.6 0-54.7 41.4-107.6 112-107.6 60.9 0 103.6 41.5 103.6 100.9 0 67.1-33.9 113.6-78 113.6-24.3 0-42.6-20.1-36.7-44.8 7-29.5 20.5-61.3 20.5-82.6 0-19-10.2-34.9-31.4-34.9-24.9 0-44.9 25.7-44.9 60.2 0 22 7.4 36.8 7.4 36.8s-24.5 103.8-29 123.2c-5 21.4-3 51.6-.9 71.2C65.4 450.9 0 361.1 0 256 0 119 111 8 248 8s248 111 248 248z"/></svg>
+            </a>
+            <?php endif; ?>
+        </div>
+        <p class="footer-copy">Cozinha da Vizinha – Copyright ® 2024 – Todos os Direitos Reservados.</p>
+        <p class="footer-credit">Realizado e desenvolvido por <a href="https://www.rafaelakarine.com.br" target="_blank">Rafa Freelancer</a></p>
+    </div>
+</footer>
+PHPEOF
+
+# ── public/assets/css/style.css ─────────────────────────────────────────────
+cat > "$BASE/public/assets/css/style.css" << 'CSSEOF'
+/* ═══ RESET & BASE ═══ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
+body {
+    font-family: 'Poppins', sans-serif;
+    font-size: 16px;
+    line-height: 1.7;
+    color: #2D1B2E;
+    background: #FFFAFB;
+    overflow-x: hidden;
+}
+img { max-width: 100%; height: auto; display: block; }
+a { color: inherit; text-decoration: none; }
+ul { list-style: none; }
+
+/* ═══ UTILITIES ═══ */
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+.text-center { text-align: center; }
+.text-left { text-align: left; }
+.mt-12 { margin-top: 48px; }
+.section { padding: 96px 0; }
+.section-title {
+    font-family: 'Poppins', sans-serif;
+    font-size: clamp(1.5rem, 4vw, 2.25rem);
+    font-weight: 600;
+    text-align: center;
+    color: #2D1B2E;
+    margin-bottom: 48px;
+    line-height: 1.3;
+}
+
+/* ═══ BUTTONS ═══ */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 14px 36px;
+    font-family: 'Poppins', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-transform: none;
+    letter-spacing: 0.02em;
+}
+.btn-primary {
+    background: #8B1A4A;
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(139,26,74,0.35);
+}
+.btn-primary:hover {
+    background: #6B1038;
+    box-shadow: 0 6px 20px rgba(139,26,74,0.45);
+    transform: translateY(-2px);
+}
+.btn-full { width: 100%; }
+
+/* ═══ HERO ═══ */
+.hero {
+    position: relative;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+.hero-bg {
+    position: absolute;
+    inset: 0;
+    background:
+        linear-gradient(135deg, rgba(139,26,74,0.92) 0%, rgba(200,60,110,0.85) 50%, rgba(253,146,166,0.78) 100%),
+        url('../images/hero-bg.jpg') center/cover no-repeat;
+    z-index: 0;
+}
+.hero-content {
+    position: relative;
+    z-index: 2;
+    text-align: center;
+    padding: 40px 24px;
+    max-width: 900px;
+}
+.hero-title {
+    font-family: 'Poppins', sans-serif;
+    font-size: clamp(1.4rem, 4.5vw, 3rem);
+    font-weight: 600;
+    color: #fff;
+    line-height: 1.4;
+    margin-bottom: 32px;
+    text-shadow: 0 2px 20px rgba(0,0,0,0.15);
+}
+.hero-content .btn-primary {
+    background: #fff;
+    color: #8B1A4A;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    font-size: 15px;
+    padding: 16px 48px;
+}
+.hero-content .btn-primary:hover {
+    background: #FFF0F3;
+    transform: translateY(-2px);
+}
+.hero-curve {
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    width: 100%;
+    z-index: 3;
+}
+.hero-curve::after {
+    content: '';
+    display: block;
+    width: 100%;
+    height: 80px;
+    background: #FFFAFB;
+    border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+}
+
+/* ═══ INTRO ═══ */
+.intro { background: #FFFAFB; }
+.intro-text {
+    max-width: 800px;
+    margin: 0 auto;
+    text-align: center;
+    font-size: 15px;
+    color: #5C4D5E;
+    line-height: 1.8;
+}
+.intro-text p + p { margin-top: 12px; }
+.intro-text strong { color: #8B1A4A; }
+
+/* ═══ PRODUCTS ═══ */
+.products { background: #FFF5F7; }
+.product-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 32px;
+}
+.product-card {
+    background: #fff;
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 2px 16px rgba(139,26,74,0.08);
+    transition: transform 0.4s ease, box-shadow 0.4s ease;
+}
+.product-card:hover {
+    transform: translateY(-6px);
+    box-shadow: 0 8px 32px rgba(139,26,74,0.16);
+}
+.product-img {
+    height: 280px;
+    overflow: hidden;
+    background: linear-gradient(135deg, #FFE0E8, #FFF0F3);
+}
+.product-img img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.5s ease;
+}
+.product-card:hover .product-img img { transform: scale(1.05); }
+.product-info { padding: 20px 24px 28px; }
+.product-desc {
+    font-size: 14px;
+    color: #5C4D5E;
+    line-height: 1.7;
+}
+
+/* ═══ DIFFERENTIALS ═══ */
+.differentials {
+    background: linear-gradient(160deg, #8B1A4A 0%, #C2185B 50%, #E91E7A 100%);
+    color: #fff;
+}
+.differentials .section-title { color: #fff; }
+.diff-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 24px;
+}
+.diff-card {
+    background: rgba(255,255,255,0.12);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 16px;
+    padding: 32px 24px;
+    text-align: center;
+    transition: background 0.3s, transform 0.3s;
+}
+.diff-card:hover {
+    background: rgba(255,255,255,0.22);
+    transform: translateY(-4px);
+}
+.diff-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 72px;
+    height: 72px;
+    margin: 0 auto 16px;
+    background: rgba(255,255,255,0.15);
+    border-radius: 50%;
+}
+.diff-icon svg { width: 36px; height: 36px; fill: #fff; }
+.diff-label {
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.5;
+}
+
+/* ═══ ABOUT ═══ */
+.about { background: #FFFAFB; }
+.about-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 64px;
+    align-items: center;
+}
+.about-label {
+    font-family: 'Sacramento', cursive;
+    font-size: 28px;
+    color: #C2185B;
+    margin-bottom: 8px;
+}
+.about-heading {
+    font-size: clamp(1.25rem, 3vw, 1.75rem);
+    font-weight: 600;
+    color: #2D1B2E;
+    margin-bottom: 24px;
+    line-height: 1.3;
+}
+.about-text p {
+    font-size: 14px;
+    color: #5C4D5E;
+    line-height: 1.8;
+    margin-bottom: 12px;
+}
+.about-img { display: flex; justify-content: center; }
+.about-img img {
+    width: 100%;
+    max-width: 400px;
+    border-radius: 24px;
+    box-shadow: 0 12px 40px rgba(139,26,74,0.12);
+}
+
+/* ═══ TESTIMONIALS ═══ */
+.testimonials {
+    background: #FFF5F7;
+    padding-bottom: 80px;
+}
+.testimonial-carousel {
+    position: relative;
+    max-width: 720px;
+    margin: 0 auto;
+    overflow: hidden;
+}
+.testimonial-track {
+    display: flex;
+    transition: transform 0.5s ease;
+}
+.testimonial-slide {
+    min-width: 100%;
+    padding: 0 16px;
+}
+.testimonial-card {
+    background: #fff;
+    border-radius: 20px;
+    padding: 40px 32px;
+    text-align: center;
+    box-shadow: 0 2px 20px rgba(139,26,74,0.08);
+}
+.testimonial-avatar {
+    width: 80px;
+    height: 80px;
+    margin: 0 auto 20px;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 3px solid #FD92A6;
+}
+.testimonial-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.testimonial-text {
+    font-size: 15px;
+    color: #5C4D5E;
+    font-style: italic;
+    line-height: 1.8;
+    margin-bottom: 20px;
+    border: none;
+    padding: 0;
+}
+.testimonial-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #8B1A4A;
+    font-style: normal;
+}
+.testimonial-name small { font-weight: 400; color: #9E8DA0; }
+.carousel-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin-top: 28px;
+}
+.carousel-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 2px solid #E8C8D4;
+    background: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s;
+    color: #8B1A4A;
+}
+.carousel-btn:hover {
+    background: #8B1A4A;
+    border-color: #8B1A4A;
+    color: #fff;
+}
+.carousel-dots { display: flex; gap: 8px; }
+.carousel-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #E8C8D4;
+    border: none;
+    cursor: pointer;
+    transition: background 0.3s;
+}
+.carousel-dot.active { background: #8B1A4A; width: 28px; border-radius: 5px; }
+
+/* ═══ CONTACT ═══ */
+.contact {
+    background: linear-gradient(160deg, #FFF5F7 0%, #FFE8EF 100%);
+}
+.contact-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 48px;
+    align-items: center;
+}
+.contact-img img {
+    width: 100%;
+    max-width: 300px;
+    border-radius: 20px;
+}
+.contact-form-wrap { max-width: 560px; }
+.contact-form-wrap .section-title { text-align: left; margin-bottom: 32px; }
+.form-row { display: flex; gap: 16px; }
+.form-group { margin-bottom: 16px; }
+.form-group-60 { flex: 6; }
+.form-group-40 { flex: 4; }
+.contact-form input,
+.contact-form textarea {
+    width: 100%;
+    padding: 14px 18px;
+    font-family: 'Poppins', sans-serif;
+    font-size: 14px;
+    border: 2px solid #E8C8D4;
+    border-radius: 10px;
+    background: #fff;
+    color: #2D1B2E;
+    transition: border-color 0.3s, box-shadow 0.3s;
+    outline: none;
+}
+.contact-form input:focus,
+.contact-form textarea:focus {
+    border-color: #C2185B;
+    box-shadow: 0 0 0 3px rgba(194,24,91,0.12);
+}
+.contact-form textarea { resize: vertical; min-height: 120px; }
+
+/* ═══ ALERTS ═══ */
+.alert {
+    padding: 14px 20px;
+    border-radius: 10px;
+    font-size: 14px;
+    margin-bottom: 20px;
+}
+.alert-success { background: #E8F5E9; color: #2E7D32; border: 1px solid #C8E6C9; }
+.alert-error { background: #FFEBEE; color: #C62828; border: 1px solid #FFCDD2; }
+.alert-error ul { padding-left: 18px; }
+.alert-error li { margin-bottom: 4px; }
+
+/* ═══ FOOTER ═══ */
+.footer {
+    background: #2D1B2E;
+    color: #D4C4D8;
+    padding: 64px 0 40px;
+    text-align: center;
+}
+.footer-title {
+    font-size: clamp(0.9rem, 2.5vw, 1.25rem);
+    font-weight: 500;
+    color: #fff;
+    margin-bottom: 28px;
+    line-height: 1.5;
+}
+.social-links {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    margin-bottom: 32px;
+}
+.social-links a {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #FD92A6;
+    transition: all 0.3s;
+}
+.social-links a:hover {
+    background: #8B1A4A;
+    border-color: #8B1A4A;
+    color: #fff;
+    transform: scale(1.1);
+}
+.footer-copy {
+    font-size: 12px;
+    opacity: 0.7;
+    margin-bottom: 8px;
+}
+.footer-credit { font-size: 12px; opacity: 0.5; }
+.footer-credit a { color: #FD92A6; }
+.footer-credit a:hover { text-decoration: underline; }
+
+/* ═══ WHATSAPP FLOAT ═══ */
+.whatsapp-float {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 9999;
+}
+.whatsapp-btn {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: #25D366;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 20px rgba(37,211,102,0.4);
+    transition: transform 0.3s, box-shadow 0.3s;
+    animation: whatsappPulse 2s infinite;
+}
+.whatsapp-btn:hover {
+    transform: scale(1.1);
+    box-shadow: 0 6px 28px rgba(37,211,102,0.5);
+}
+@keyframes whatsappPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+}
+.whatsapp-bubble {
+    position: absolute;
+    bottom: 76px;
+    right: 0;
+    background: #FD92A6;
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 12px;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.4s, transform 0.4s;
+    pointer-events: none;
+}
+.whatsapp-bubble.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+.whatsapp-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -8px;
+    right: 20px;
+    border: 8px solid transparent;
+    border-top-color: #FD92A6;
+    border-bottom: 0;
+}
+
+/* ═══ RESPONSIVE ═══ */
+@media (max-width: 1024px) {
+    .about-grid { grid-template-columns: 1fr; gap: 40px; }
+    .about-img { order: -1; }
+    .about-img img { max-width: 300px; }
+    .contact-grid { grid-template-columns: 1fr; justify-items: center; }
+    .contact-img { display: none; }
+    .contact-form-wrap { max-width: 100%; }
+}
+@media (max-width: 768px) {
+    .section { padding: 64px 0; }
+    .hero { min-height: 80vh; }
+    .product-grid { grid-template-columns: 1fr 1fr; gap: 20px; }
+    .product-img { height: 200px; }
+    .diff-grid { grid-template-columns: 1fr 1fr; gap: 16px; }
+    .diff-card { padding: 24px 16px; }
+    .form-row { flex-direction: column; gap: 0; }
+    .form-group-60, .form-group-40 { flex: none; }
+}
+@media (max-width: 480px) {
+    .product-grid { grid-template-columns: 1fr; }
+    .diff-grid { grid-template-columns: 1fr; }
+    .hero-title { font-size: 1.3rem; }
+    .testimonial-card { padding: 28px 20px; }
+}
+CSSEOF
+
+# ── public/assets/js/main.js ────────────────────────────────────────────────
+cat > "$BASE/public/assets/js/main.js" << 'JSEOF'
+/* ═══ Testimonial Carousel ═══ */
+(function () {
+    const track = document.getElementById('testimonialTrack');
+    const dotsWrap = document.getElementById('carouselDots');
+    const prevBtn = document.getElementById('carouselPrev');
+    const nextBtn = document.getElementById('carouselNext');
+
+    if (!track || !dotsWrap) return;
+
+    const slides = track.querySelectorAll('.testimonial-slide');
+    const total = slides.length;
+    let current = 0;
+    let autoplayTimer;
+
+    // Create dots
+    for (let i = 0; i < total; i++) {
+        const dot = document.createElement('button');
+        dot.className = 'carousel-dot' + (i === 0 ? ' active' : '');
+        dot.setAttribute('aria-label', 'Slide ' + (i + 1));
+        dot.addEventListener('click', () => goTo(i));
+        dotsWrap.appendChild(dot);
+    }
+
+    function goTo(index) {
+        current = ((index % total) + total) % total;
+        track.style.transform = 'translateX(-' + (current * 100) + '%)';
+        dotsWrap.querySelectorAll('.carousel-dot').forEach((d, i) => {
+            d.classList.toggle('active', i === current);
+        });
+    }
+
+    function next() { goTo(current + 1); }
+    function prev() { goTo(current - 1); }
+
+    prevBtn.addEventListener('click', () => { prev(); resetAutoplay(); });
+    nextBtn.addEventListener('click', () => { next(); resetAutoplay(); });
+
+    function startAutoplay() { autoplayTimer = setInterval(next, 5000); }
+    function resetAutoplay() { clearInterval(autoplayTimer); startAutoplay(); }
+
+    startAutoplay();
+
+    // Touch support
+    let startX = 0;
+    track.addEventListener('touchstart', e => { startX = e.touches[0].clientX; }, { passive: true });
+    track.addEventListener('touchend', e => {
+        const diff = startX - e.changedTouches[0].clientX;
+        if (Math.abs(diff) > 50) {
+            diff > 0 ? next() : prev();
+            resetAutoplay();
+        }
+    }, { passive: true });
+})();
+
+/* ═══ WhatsApp Bubble ═══ */
+(function () {
+    const bubble = document.getElementById('whatsappBubble');
+    if (!bubble) return;
+    setTimeout(() => { bubble.classList.add('show'); }, 4000);
+    setTimeout(() => { bubble.classList.remove('show'); }, 10000);
+})();
+
+/* ═══ Smooth scroll for anchor links ═══ */
+document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+    anchor.addEventListener('click', function (e) {
+        const target = document.querySelector(this.getAttribute('href'));
+        if (target) {
+            e.preventDefault();
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    });
+});
+
+/* ═══ Contact form: simple client-side validation feedback ═══ */
+(function () {
+    const form = document.getElementById('contactForm');
+    if (!form) return;
+    form.addEventListener('submit', function () {
+        const btn = form.querySelector('button[type="submit"]');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Enviando...';
+        }
+    });
+})();
+JSEOF
+
+# ── database/schema.sql ─────────────────────────────────────────────────────
+cat > "$BASE/database/schema.sql" << 'SQLEOF'
+-- ═══════════════════════════════════════════════════════════════
+-- Cozinha da Vizinha Doces — Database Schema
+-- ═══════════════════════════════════════════════════════════════
+
+CREATE DATABASE IF NOT EXISTS `cozinha_da_vizinha`
+  DEFAULT CHARACTER SET utf8mb4
+  DEFAULT COLLATE utf8mb4_unicode_ci;
+
+USE `cozinha_da_vizinha`;
+
+-- ── Products ───────────────────────────────────────────────────
+CREATE TABLE `products` (
+  `id`         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `name`       VARCHAR(191) NOT NULL,
+  `description` TEXT,
+  `image`      VARCHAR(500),
+  `category`   VARCHAR(100),
+  `price`      DECIMAL(10,2) DEFAULT 0.00,
+  `active`     TINYINT(1) DEFAULT 1,
+  `sort_order` INT DEFAULT 0,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── Testimonials ───────────────────────────────────────────────
+CREATE TABLE `testimonials` (
+  `id`         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `name`       VARCHAR(191) NOT NULL,
+  `title`      VARCHAR(191),
+  `text`       TEXT NOT NULL,
+  `image`      VARCHAR(500),
+  `active`     TINYINT(1) DEFAULT 1,
+  `sort_order` INT DEFAULT 0,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── Contacts ───────────────────────────────────────────────────
+CREATE TABLE `contacts` (
+  `id`         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `name`       VARCHAR(191) NOT NULL,
+  `phone`      VARCHAR(50),
+  `email`      VARCHAR(191) NOT NULL,
+  `message`    TEXT,
+  `ip_address` VARCHAR(45),
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── Settings (Key-Value) ──────────────────────────────────────
+CREATE TABLE `settings` (
+  `id`        INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `key_name`  VARCHAR(100) NOT NULL UNIQUE,
+  `value`     TEXT,
+  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── Seed: Sample Products ──────────────────────────────────────
+INSERT INTO `products` (`name`, `description`, `image`, `category`, `sort_order`) VALUES
+('Bolos Personalizados', 'Bolos deliciosos e personalizados, feitos especialmente para refletir a sua marca!', '/corporativo/assets/images/bolo.png', 'bolos', 1),
+('Cupcakes', 'Cupcakes fofinhos com logotipo, decoração e fita personalizada.', '/corporativo/assets/images/cupcake.png', 'cupcakes', 2),
+('Pães de Mel', 'Pães de mel irresistíveis, feitos sob medida para sua necessidade.', '/corporativo/assets/images/pao-de-mel.png', 'paes-de-mel', 3),
+('Macarons e Biscoitos', 'Macarons, Biscoitos e muitas outras delícias personalizadas para sua empresa.', '/corporativo/assets/images/macaron.png', 'outros', 4);
+
+-- ── Seed: Sample Testimonials ──────────────────────────────────
+INSERT INTO `testimonials` (`name`, `title`, `text`, `image`, `sort_order`) VALUES
+('Revista Business Alphaville', '', 'Os doces estavam maravilhosos e a personalização deu um charme a mais. Tudo muito lindo e de bom gosto.', '/corporativo/assets/images/avatar-1.png', 1),
+('Tata Estanieck — Morana Joias', 'Bolo de 30 anos', 'E esse bolo, gente?! Olha aqui! Euzinha com a minha sacolinha da Morana, eu amei!!', '/corporativo/assets/images/avatar-2.png', 2),
+('Rogerio Lins, Prefeito de Osasco', '', 'O bolo estava uma delícia e muito bonito.', '/corporativo/assets/images/avatar-3.png', 3),
+('Pamela Domingues e Regiane Tapias', 'TV Gazeta — Mulheres', 'Quanta Delicadeza, Renata, que gracinha, amamos...', '/corporativo/assets/images/avatar-4.png', 4);
+
+-- ── Seed: Settings ─────────────────────────────────────────────
+INSERT INTO `settings` (`key_name`, `value`) VALUES
+('whatsapp',  '5511991906913'),
+('phone',     '(11) 99190-6913'),
+('email',     'contato@cozinhadavizinhadoces.com.br'),
+('facebook',  'https://www.facebook.com/docesdavizinha'),
+('youtube',   'https://www.youtube.com/@cozinhadavizinhadoces'),
+('instagram', 'https://www.instagram.com/cozinhadavizinhasp'),
+('pinterest', 'https://br.pinterest.com/cozinhadavizinha/');
+SQLEOF
+
+# ── database/migrate.sh ──────────────────────────────────────────────────────
+cat > "$BASE/database/migrate.sh" << 'MIGEOF'
+#!/bin/bash
+# Run: mysql -u root -p < schema.sql
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+mysql -u root < "$SCRIPT_DIR/schema.sql"
+echo "✅ Database migrated successfully."
+MIGEOF
+chmod +x "$BASE/database/migrate.sh"
+
+# ── README.md ────────────────────────────────────────────────────────────────
+cat > "$BASE/README.md" << 'MDEOF'
+# 🧁 Cozinha da Vizinha Doces — MVC + ORM
+
+## Arquitetura
+
+```
+cozinha-da-vizinha/
+├── public/                  # Document root (Apache/Nginx aponta aqui)
+│   ├── index.php            # Entry point — bootstrap & dispatch
+│   ├── .htaccess            # URL rewriting
+│   └── assets/
+│       ├── css/style.css
+│       ├── js/main.js
+│       └── images/          # Coloque as imagens aqui
+├── app/
+│   ├── config/
+│   │   ├── app.php          # Constantes da aplicação
+│   │   └── database.php     # Conexão PDO (Singleton)
+│   ├── core/
+│   │   ├── Model.php        # ORM base (CRUD, where, paginate, count)
+│   │   ├── Controller.php   # Base controller (view, json, redirect)
+│   │   ├── View.php         # Renderizador de views
+│   │   └── Router.php       # Roteador GET/POST
+│   ├── models/              # ORM Models
+│   │   ├── Product.php
+│   │   ├── Testimonial.php
+│   │   ├── Contact.php
+│   │   └── Setting.php
+│   ├── controllers/
+│   │   ├── HomeController.php
+│   │   └── ContactController.php
+│   └── views/
+│       ├── layouts/
+│       │   ├── header.php
+│       │   └── footer.php
+│       └── home/
+│           └── index.php
+└── database/
+    ├── schema.sql           # Tabelas + dados iniciais
+    └── migrate.sh           # Script de migração
+```
+
+## MVC Flow
+
+```
+Request → .htaccess → public/index.php
+  → Router::dispatch()
+    → Controller::action()
+      → Model::ORM_method()  (PDO → MySQL)
+      → View::render()       (PHP templates)
+        → layouts/header.php
+        → home/index.php
+        → layouts/footer.php
+```
+
+## ORM Features (Model base)
+
+| Método | Descrição |
+|--------|-----------|
+| `find($id)` | Busca por ID |
+| `all()` | Retorna todos os registros |
+| `where($col, $val)` | Filtro com prepared statement |
+| `first($col, $val)` | Primeiro resultado |
+| `create()` | INSERT com mass assignment |
+| `update($data)` | UPDATE por ID |
+| `delete()` | DELETE por ID |
+| `count()` | COUNT(*) |
+| `paginate($page, $perPage)` | Paginação |
+
+## Instalação
+
+### 1. Criar o banco
+```bash
+cd database
+chmod +x migrate.sh
+./migrate.sh
+# ou manualmente:
+mysql -u root -p < schema.sql
+```
+
+### 2. Configurar Apache
+```apache
+<VirtualHost *:80>
+    ServerName cozinhadavizinha.local
+    DocumentRoot /caminho/para/cozinha-da-vizinha/public
+    <Directory /caminho/para/cozinha-da-vizinha/public>
+        AllowOverride All
+        Require all granted
+    </Directory>
+</VirtualHost>
+```
+
+### 3. Ajustar BASE_URL
+Em `app/config/app.php`, altere `BASE_URL` para corresponder ao seu virtual host.
+
+### 4. Imagens
+Coloque as imagens em `public/assets/images/`:
+- `hero-bg.jpg` — Background do hero
+- `bolo.png`, `cupcake.png`, `pao-de-mel.png`, `macaron.png` — Produtos
+- `renatinha.png` — Foto da chef (seção sobre)
+- `renatinha-contato.png` — Foto da chef (seção contato)
+- `avatar-1.png` a `avatar-4.png` — Avatares de depoimentos
+- `favicon.png` — Favicon
+
+> **Nota:** O sistema funciona sem banco de dados — usa dados padrão (fallback) caso a conexão falhe.
+
+## Rotas
+
+| Método | Rota | Controller@Action |
+|--------|------|-------------------|
+| GET | `/` | HomeController@index |
+| GET | `/home` | HomeController@index |
+| GET | `/api/products` | HomeController@apiProducts |
+| POST | `/contato` | ContactController@store |
+MDEOF
+
+# ── Empty images placeholder ────────────────────────────────────────────────
+touch "$BASE/public/assets/images/.gitkeep"
+
+echo ""
+echo "✅ Project created: $BASE"
+echo ""
+echo "📁 Structure:"
+find "$BASE" -type f | sort | sed "s|$BASE/||" | while read -r f; do
+    echo "   ├── $f"
+done
+echo ""
+echo "🚀 Next steps:"
+echo "   1. cd $BASE"
+echo "   2. mysql -u root < database/schema.sql"
+echo "   3. Configure Apache DocumentRoot → $BASE/public"
+echo "   4. Add images to public/assets/images/"
+echo "   5. Update BASE_URL in app/config/app.php"
+echo ""
+```
+
+---
+
+## How to use
+
+Save the entire script above as `setup.sh`, then run:
+
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+It will generate the complete project with this structure:
+
+```
+cozinha-da-vizinha/
+├── public/
+│   ├── index.php              ← Bootstrap + Router dispatch
+│   ├── .htaccess              ← URL rewriting to index.php?url=
+│   └── assets/
+│       ├── css/style.css      ← Full responsive stylesheet
+│       ├── js/main.js         ← Carousel + WhatsApp bubble + form
+│       └── images/
+├── app/
+│   ├── config/
+│   │   ├── app.php            ← Constants (BASE_URL, WHATSAPP, etc.)
+│   │   └── database.php       ← PDO Singleton connection
+│   ├── core/
+│   │   ├── Model.php          ← **ORM base** with find/where/create/update/delete/paginate
+│   │   ├── Controller.php     ← Base (view, json, redirect, sanitize)
+│   │   ├── View.php           ← Template renderer with layouts
+│   │   └── Router.php         ← GET/POST dispatcher with regex patterns
+│   ├── models/
+│   │   ├── Product.php        ← extends Model (active, byCategory, formatPrice)
+│   │   ├── Testimonial.php    ← extends Model (active)
+│   │   ├── Contact.php        ← extends Model
+│   │   └── Setting.php        ← extends Model (get, set, allGrouped)
+│   ├── controllers/
+│   │   ├── HomeController.php ← index() + apiProducts() + DB fallback
+│   │   └── ContactController.php ← store() with validation + flash messages
+│   └── views/
+│       ├── layouts/header.php + footer.php
+│       └── home/index.php     ← All sections: hero, products, testimonials, contact, footer
+├── database/
+│   ├── schema.sql             ← 4 tables + seed data
+│   └── migrate.sh
+└── README.md
+```
+
+**Key architecture decisions:**
+
+- **ORM** — The `Model` base class wraps PDO with `find()`, `where()`, `create()`, `update()`, `delete()`, `count()`, `paginate()` — all using prepared statements. Each model just declares `$table` and `$fillable`.
+
+- **MVC separation** — Router calls `Controller@action` → Controller calls Model (ORM) → Controller passes data to View. Views are pure PHP templates with zero business logic.
+
+- **Graceful degradation** — If the database isn't set up yet, `HomeController` catches the exception and serves hardcoded fallback data, so the site renders immediately after running the script.
+
+- **Contact form flow** — POST `/contato` → `ContactController@store` validates → `Contact::create()` via ORM → flash message → redirect back to `/#contato`.
+
+- **API endpoint** — GET `/api/products` returns JSON for potential AJAX consumption.
