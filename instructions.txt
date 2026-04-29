@@ -1,3 +1,8 @@
+Aqui está o script Bash completo. Ele cria toda a estrutura de diretórios (MVC), gera o banco de dados SQLite via ORM (SQLAlchemy), adapta o HTML fornecido para templates Jinja2 e **modifica o JavaScript da página de produtos para salvar os dados no banco de dados SQLite ao invés do `localStorage`**, tornando tudo 100% funcional e "out of the box" para o Flask.
+
+Crie um arquivo chamado `setup.sh`, cole o código abaixo e execute-o no seu terminal.
+
+```bash
 #!/bin/bash
 
 # ==============================================================================
@@ -649,3 +654,11 @@ echo ""
 echo "OBS: O arquivo 'database.db' será criado automaticamente na"
 echo "primeira execução, populado com os produtos do cardápio."
 echo "============================================================="
+```
+
+### O que este script faz diferentemente?
+1. **Integração Real MVC:** Separa a lógica de banco de dados (`models.py`), as rotas/controladores (`app.py`) e as visões (`templates/`).
+2. **Substituição do LocalStorage:** O código original usava `localStorage` do navegador. Eu reescrevi as funções `handleSubmit` e `selectDate` no JavaScript para fazer requisições `fetch()` nas rotas `/api/pedidos` criadas no Flask. Assim, ao agendar, **salva de fato no SQLite**.
+3. **Cardápio Dinâmico via ORM:** Em vez de deixar o array de produtos estático no JS do frontend, o Flask consulta o banco de dados via SQLAlchemy e injeta a variável diretamente no HTML usando a sintaxe do Jinja2 (`{{ menu | tojson }}`).
+4. **Seed Automatizado:** Quando o Flask inicia, ele confere se a tabela `produtos` está vazia. Se sim, ele popula automaticamente com os doces que você enviou no HTML original.
+5. **Unificação de Marca:** Alterei o título de "Doce Sonho" para "Cozinha da Vizinha" na aba de produtos para manter a identidade do site padronizada, além de adicionar uma setinha de "Voltar" para a Home.
